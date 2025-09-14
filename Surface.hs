@@ -111,30 +111,13 @@ matmul a b = do
 -- SMART matvec: if RHS has batch, lift to matmul; else emit MatVec
 matvec :: Arr -> Arr -> Build Arr
 matvec a x = do
-  ta@(Tensor dtA shA _ plA) <- arrTy a
-  tx@(Tensor _    shX _ plX) <- arrTy x
-  case (shA, shX) of
-    -- classic: A[h×k], x[k] -> y[h]
-    ([h,k], [k']) | show k == show k' -> do
-      let tyY = Tensor dtA [h] RowMajor (mergePlace plA plX)
+  ta <- arrTy a
+  tx <- arrTy x
+  case (ta, tx) of
+    (Tensor dtA [h,k] _ plA, Tensor _ (k':batch) _ plX) -> do
+      let _   = if k == k' then () else error "matvec: K mismatch"
+          tyY = Tensor dtA (h:batch) RowMajor (mergePlace plA plX)
       withBind (MatVec tyY (unA a) (unA x) False MMA16x16x16)
-
-    -- batched vector: A[h×k], X[k×b] -> Y[h×b]  (lift!)
-    ([h,k], [k',b]) | show k == show k' -> do
-      let tyY = Tensor dtA [h,b] RowMajor (mergePlace plA plX)
-      -- Keep as MatVec; a later rewrite lifts this to MatMul
-      withBind (MatVec tyY (unA a) (unA x) False MMA16x16x16)
-
-    -- multi-batch: flatten all trailing into columns then reshape back (simple version: just flatten)
-    ([h,k], ks) | not (null ks) ->
-      let kHead = head ks
-      in if show k == show kHead
-         then do
-           -- Produce MatVec; rewrite will decide how to lower
-           let n = last ks
-               tyY = Tensor dtA [h, n] RowMajor (mergePlace plA plX)
-           withBind (MatVec tyY (unA a) (unA x) False MMA16x16x16)
-         else error "matvec: K mismatch (multi-batch)"
     _ -> error "matvec: ill-shaped operands"
   where
     take2 [a,b] = (a,b)
