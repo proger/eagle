@@ -2,10 +2,12 @@
 module Main where
 
 import qualified Data.Text as T
+import qualified Data.Text.IO as TIO
 import           IR
 import           Planner
 import           Surface
 import           Rewrite
+import           Backend (emitTorch, emitTorchToFile)
 
 -- Build a single batched RNN step in the surface DSL
 buildBatchedRnnStep :: Prog
@@ -70,7 +72,9 @@ main = do
   printProg "=== Split-by-columns (before optimize) ===" progCol
   printProg "=== Split-by-columns (after  optimize) ===" progColOpt
 
-  -- If you have a PyTorch emitter (e.g., EmitterTorch.emitTorchToFile), you can enable:
-  -- import EmitterTorch (emitTorchToFile)
-  -- emitTorchToFile "compiled_rnn_step.py" progColOpt
-  -- putStrLn "Wrote compiled_rnn_step.py"
+  -- Emit PyTorch eager code using Backend.hs
+  let torchTxt = emitTorch progColOpt
+  putStrLn "\n=== PyTorch (eager) ==="
+  TIO.putStrLn torchTxt
+  emitTorchToFile "compiled_rnn_step.py" progColOpt
+  putStrLn "Wrote compiled_rnn_step.py"

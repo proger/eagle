@@ -1,5 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
-module EmitterTorch
+{-# LANGUAGE LambdaCase #-}
+module Backend
   ( emitTorch         -- :: Prog -> Text
   , emitTorchToFile   -- :: FilePath -> Prog -> IO ()
   ) where
