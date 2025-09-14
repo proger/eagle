@@ -6,8 +6,6 @@ module Surface
   , addBatchView, dropBatchView
   , mapA, zipAdd, tanhA
   , matmul, matvec     -- matvec is a SMART constructor (lifts to matmul)
-  , -- vmap specialized for rnnStep shape convention
-    vmapRnnStep
   ) where
 
 import           Control.Monad.State.Strict
@@ -127,33 +125,3 @@ matvec a x = do
 mergePlace :: PlaceAnn -> PlaceAnn -> PlaceAnn
 mergePlace (PConcrete p) (PConcrete _) = PConcrete p
 mergePlace pa _ = pa
-
---------------------------------------------------------------------------------
--- vmap specialized for rnnStep (5-arg step): adds batch on x, hprev, bias; leaves weights as-is
-
--- rnnStep has type:
---   Wx[h×x] -> Wh[h×h] -> b[h] or b[h×1]/[h×b] -> x[k] -> hprev[h] -> h[h] (or with batch axes)
---
--- vmapRnnStep b step lifts it to operate on batches:
---   x  becomes [x×b]
---   h  becomes [h×b]
---   b  becomes [h×b] (view)
-vmapRnnStep
-  :: Dim
-  -> (Arr -> Arr -> Arr -> Arr -> Arr -> Build Arr)  -- step Wx Wh b x hprev
-  ->  Arr -> Arr -> Arr -> Arr -> Arr -> Build Arr   -- returns H (batched)
-vmapRnnStep b step wx wh bBias x hprev = do
-  -- add a trailing batch axis to x, hprev, bias (weights stay 2D)
-  xB     <- addBatchView b x
-  hprevB <- addBatchView b hprev
-  bB     <- ensureBiasBatched b bBias
-  step wx wh bB xB hprevB
-  where
-    ensureBiasBatched :: Dim -> Arr -> Build Arr
-    ensureBiasBatched b a = do
-      Tensor _ sh _ _ <- arrTy a
-      case sh of
-        [ _h ]       -> addBatchView b a           -- [h] -> [h×b]
-        [ _h, _one ] -> addBatchView b a           -- [h×1] -> [h×1×b] (simple view)
-        [ _h, _b  ]  -> pure a                     -- already [h×b]
-        _            -> addBatchView b a           -- fallback: add last axis

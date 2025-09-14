@@ -3,6 +3,7 @@ module Main where
 
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
+import           Control.Monad.State.Strict (get)
 import           IR
 import           Planner
 import           Surface
@@ -15,11 +16,11 @@ buildBatchedRnnStep =
   runBuild $ do
     let dt = BF16
         h  = sym "h"; x = sym "x"; b = sym "b"
-        tWx = Tensor dt [h,x] RowMajor (PUnknown "α_Wx")
-        tWh = Tensor dt [h,h] RowMajor (PUnknown "α_Wh")
-        tB  = Tensor dt [h]   RowMajor (PUnknown "α_b")
-        tX  = Tensor dt [x]   RowMajor (PUnknown "α_x")
-        tH  = Tensor dt [h]   RowMajor (PUnknown "α_h")
+        tWx = Tensor dt [h,x] RowMajor (PUnknown "p_Wx")
+        tWh = Tensor dt [h,h] RowMajor (PUnknown "p_Wh")
+        tB  = Tensor dt [h]   RowMajor (PUnknown "p_b")
+        tX  = Tensor dt [x]   RowMajor (PUnknown "p_x")
+        tH  = Tensor dt [h]   RowMajor (PUnknown "p_h")
 
     wx <- param tWx "Wx"
     wh <- param tWh "Wh"
@@ -66,15 +67,41 @@ main = do
       progColOpt = runPipeline progCol
 
   -- Show before/after
+  printProg "=== Base ===" progAlg
   printProg "=== Replicated (before optimize) ===" progRep
   printProg "=== Replicated (after  optimize) ===" progRepOpt
 
-  printProg "=== Split-by-columns (before optimize) ===" progCol
-  printProg "=== Split-by-columns (after  optimize) ===" progColOpt
+-- vmap specialized for rnnStep (5-arg step): adds batch on x, hprev, bias; leaves weights as-is
+-- rnnStep has type:
+--   Wx[h×x] -> Wh[h×h] -> b[h] or b[h×1]/[h×b] -> x[k] -> hprev[h] -> h[h] (or with batch axes)
+-- vmapRnnStep b step lifts it to operate on batches:
+--   x  becomes [x×b]
+--   h  becomes [h×b]
+--   b  becomes [h×b] (view)
+vmapRnnStep
+  :: Dim
+  -> (Arr -> Arr -> Arr -> Arr -> Arr -> Build Arr)  -- step Wx Wh b x hprev
+  ->  Arr -> Arr -> Arr -> Arr -> Arr -> Build Arr   -- returns H (batched)
+vmapRnnStep b step wx wh bBias x hprev = do
+  -- add a trailing batch axis to x, hprev, bias (weights stay 2D)
+  xB     <- addBatchView b x
+  hprevB <- addBatchView b hprev
+  bB     <- ensureBiasBatched b bBias
+  step wx wh bB xB hprevB
+  where
+    -- local type query (mirror of Surface.arrTy)
+    arrTyM :: Arr -> Build Ty
+    arrTyM (Arr v) = do
+      defs <- get
+      case lookupLet v defs of
+        Just (Let _ op) -> pure (oTy op)
+        _               -> error "arrTy: unknown var"
 
-  -- Emit PyTorch eager code using Backend.hs
-  let torchTxt = emitTorch progColOpt
-  putStrLn "\n=== PyTorch (eager) ==="
-  TIO.putStrLn torchTxt
-  emitTorchToFile "compiled_rnn_step.py" progColOpt
-  putStrLn "Wrote compiled_rnn_step.py"
+    ensureBiasBatched :: Dim -> Arr -> Build Arr
+    ensureBiasBatched b a = do
+      Tensor _ sh _ _ <- arrTyM a
+      case sh of
+        [ _h ]       -> addBatchView b a           -- [h] -> [h×b]
+        [ _h, _one ] -> addBatchView b a           -- [h×1] -> [h×1×b] (simple view)
+        [ _h, _b  ]  -> pure a                     -- already [h×b]
+        _            -> addBatchView b a           -- fallback: add last axis
