@@ -1,4 +1,5 @@
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE LambdaCase #-}
 module Planner
   ( -- device mesh / target
     Mesh(..), Target(..)
@@ -14,6 +15,8 @@ module Planner
 
 import qualified Data.Map.Strict as M
 import qualified Data.Text as T
+import           Data.Maybe (fromMaybe)
+import           Control.Applicative ((<|>))
 import           IR
 
 --------------------------------------------------------------------------------
@@ -195,8 +198,6 @@ planOp env acc v = \case
 --------------------------------------------------------------------------------
 -- alignment and transformation rules
 
-import           Data.Maybe (fromMaybe)
-import           Control.Applicative ((<|>))
 
 -- align two inputs to a common placement, optionally guided by a desired output placement
 align :: [Stmt]

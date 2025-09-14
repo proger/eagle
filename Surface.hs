@@ -48,6 +48,11 @@ withBind op = do
   put defs'
   pure (Arr v)
 
+-- small helper for shape pairs
+take2 :: [a] -> (a, a)
+take2 [a,b] = (a,b)
+take2 _     = error "matmul/matvec: rank mismatch"
+
 --------------------------------------------------------------------------------
 -- Parameters
 
@@ -155,14 +160,11 @@ vmapRnnStep
   ->  Arr -> Arr -> Arr -> Arr -> Arr -> Build Arr   -- returns H (batched)
 vmapRnnStep b step wx wh bBias x hprev = do
   -- add a trailing batch axis to x, hprev, bias (weights stay 2D)
-  xB     =<- addBatchView b x
-  hprevB =<- addBatchView b hprev
-  bB     =<- ensureBiasBatched b bBias
+  xB     <- addBatchView b x
+  hprevB <- addBatchView b hprev
+  bB     <- ensureBiasBatched b bBias
   step wx wh bB xB hprevB
   where
-    ( =<- ) :: (a -> Build b) -> a -> Build b
-    ( =<- ) = flip (>>=)
-
     ensureBiasBatched :: Dim -> Arr -> Build Arr
     ensureBiasBatched b a = do
       Tensor _ sh _ _ <- arrTy a

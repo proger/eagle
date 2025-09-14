@@ -9,6 +9,7 @@ module IR
   ( -- * Scalar/data types, shapes, layout
     DType(..)
   , Dim(..), Shape
+  , sym
   , Layout(..)
 
     -- * Placement (abstract, then specialized)
@@ -66,11 +67,15 @@ data DType = F16 | BF16 | F32 | I32
   deriving (Eq, Ord, Show, Generic)
 
 -- symbolic-friendly dimension
-data Dim = static !Int | sym !T.Text
+data Dim = Static !Int | Sym !T.Text
   deriving (Eq, Ord, Generic)
 instance Show Dim where
-  show (static n) = show n
-  show (sym s)    = T.unpack s
+  show (Static n) = show n
+  show (Sym s)    = T.unpack s
+
+-- Smart constructors to preserve existing API usage
+sym :: T.Text -> Dim
+sym = Sym
 
 type Shape = [Dim]
 

@@ -164,7 +164,7 @@ shapeRank = length
 lastSymLast :: Ty -> Maybe T.Text
 lastSymLast (Tensor _ sh _ _) =
   case reverse sh of
-    (sym s : _) -> Just s
+    (Sym s : _) -> Just s
     _           -> Nothing
 
 -- small printers
