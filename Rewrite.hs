@@ -8,6 +8,7 @@ module Rewrite
   , passDCE
     -- individual local rewrites
   , rewriteMapAfterMatMul
+  , rewriteMatVecToMatMul
   , rewritePullTranspose
   ) where
 
@@ -75,16 +76,37 @@ rewriteMapAfterMatMul ss = go [] ss
 rewritePullTranspose :: LocalRewrite
 rewritePullTranspose ss =
   let defs = defsOf ss
-  in (map (step defs) ss, True)
+  in go defs [] False ss
   where
-    step m (Let v (MatMul t a b ta tb mma)) =
+    go _ acc changed [] = (reverse acc, changed)
+    go m acc changed (s@(Let v (MatMul t a b ta tb mma)) : rest) =
       case (lookupDef m a, lookupDef m b) of
         (Just (Transpose _ [1,0] a0), _) ->
-           Let v (MatMul t a0 b (not ta) tb mma)
+          let s' = Let v (MatMul t a0 b (not ta) tb mma)
+          in go m (s':acc) True rest
         (_, Just (Transpose _ [1,0] b0)) ->
-           Let v (MatMul t a b0 ta (not tb) mma)
-        _ -> Let v (MatMul t a b ta tb mma)
-    step _ s = s
+          let s' = Let v (MatMul t a b0 ta (not tb) mma)
+          in go m (s':acc) True rest
+        _ -> go m (s:acc) changed rest
+    go m acc changed (s:rest) = go m (s:acc) changed rest
+
+-- Lift MatVec with batched RHS into a MatMul. This keeps Surface simple.
+rewriteMatVecToMatMul :: LocalRewrite
+rewriteMatVecToMatMul ss =
+  let defs = defsOf ss
+  in go defs [] False ss
+  where
+    rhsRank m v =
+      case lookupDef m v of
+        Just op -> length (shape (oTy op))
+        Nothing -> 1 -- if unknown, assume vector to be safe
+    go _ acc changed [] = (reverse acc, changed)
+    go m acc changed (Let v (MatVec t a x ta mma) : rest)
+      | rhsRank m x > 1 =
+          let s' = Let v (MatMul t a x ta False mma)
+          in go m (s':acc) True rest
+      | otherwise = go m (Let v (MatVec t a x ta mma) : acc) changed rest
+    go m acc changed (s:rest) = go m (s:acc) changed rest
 
 --------------------------------------------------------------------------------
 -- 2) CSE via simple value numbering / hash-consing
@@ -180,7 +202,8 @@ lfix x f = let x' = f x in if x' == x then x else lfix x' f
 runPipeline :: Prog -> Prog
 runPipeline (Prog defs ret) =
   let defs1 = passFixpoint
-                [ rewritePullTranspose
+                [ rewriteMatVecToMatMul
+                , rewritePullTranspose
                 , rewriteMapAfterMatMul
                 ] defs
       defs2 = passCSE defs1

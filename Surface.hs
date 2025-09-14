@@ -122,17 +122,18 @@ matvec a x = do
     -- batched vector: A[h×k], X[k×b] -> Y[h×b]  (lift!)
     ([h,k], [k',b]) | show k == show k' -> do
       let tyY = Tensor dtA [h,b] RowMajor (mergePlace plA plX)
-      withBind (MatMul tyY (unA a) (unA x) False False MMA16x16x16)
+      -- Keep as MatVec; a later rewrite lifts this to MatMul
+      withBind (MatVec tyY (unA a) (unA x) False MMA16x16x16)
 
     -- multi-batch: flatten all trailing into columns then reshape back (simple version: just flatten)
     ([h,k], ks) | not (null ks) ->
       let kHead = head ks
       in if show k == show kHead
          then do
-           -- flatten RHS trailing dims to one N, do matmul, keep flattened result
+           -- Produce MatVec; rewrite will decide how to lower
            let n = last ks
                tyY = Tensor dtA [h, n] RowMajor (mergePlace plA plX)
-           withBind (MatMul tyY (unA a) (unA x) False False MMA16x16x16)
+           withBind (MatVec tyY (unA a) (unA x) False MMA16x16x16)
          else error "matvec: K mismatch (multi-batch)"
     _ -> error "matvec: ill-shaped operands"
   where
