@@ -125,6 +125,7 @@ data OpKey
   | KMatMul Ty V V Bool Bool MMA
   | KMatMulEpi Ty V V Bool Bool MMA (Maybe (PW, Maybe V))
   | KColl Ty Collective V
+  | KGradTanh Ty V V
   deriving (Eq, Ord, Show)
 
 keyOf :: Op -> OpKey
@@ -141,6 +142,7 @@ keyOf = \case
   MatMul t a b ta tb m          -> KMatMul t a b ta tb m
   MatMulEpilogue t a b ta tb m e-> KMatMulEpi t a b ta tb m e
   Collective t k a              -> KColl t k a
+  GradTanh t y gy               -> KGradTanh t y gy
 
 -- rename operands in an op (using IR helper)
 applySub :: M.Map V V -> Op -> Op

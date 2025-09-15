@@ -9,6 +9,7 @@ import           Planner
 import           Surface
 import           Rewrite
 import           Backend (emitTorch, emitTorchToFile)
+import           Autodiff (gradAllWithSeed)
 
 -- Build a single batched RNN step in the surface DSL
 buildBatchedRnnStep :: Prog
@@ -86,6 +87,19 @@ main = do
   TIO.putStrLn (emitTorch progColOpt)
   emitTorchToFile "compiled_rnn_step.after.py" progColOpt
   putStrLn "Wrote compiled_rnn_step.replicated.before.py, compiled_rnn_step.before.py and compiled_rnn_step.after.py"
+
+  -- Gradients of all parameters for objective 0.5*||h||^2 (seed = y)
+  -- We compute grads on the split-by-columns optimized program.
+  let Prog defsY y = progColOpt
+  let (progWithGrads, grads) = gradAllWithSeed (Just y) progColOpt
+  putStrLn "\n=== Gradients (Split-by-columns, after optimize) ==="
+  mapM_ (\(nm, v) -> do
+            let p = case progWithGrads of Prog ds _ -> Prog ds v
+            putStrLn ("-- grad of " <> T.unpack nm)
+            TIO.putStrLn (emitTorch p)
+            emitTorchToFile ("compiled_grad_" <> T.unpack nm <> ".py") p
+        ) grads
+  putStrLn "Wrote compiled_grad_<param>.py files for all params"
 
 -- vmap specialized for rnnStep (5-arg step): adds batch on x, hprev, bias; leaves weights as-is
 -- rnnStep has type:

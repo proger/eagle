@@ -172,6 +172,15 @@ planOp env acc v = \case
         env' = setPlace env v pOut
     in (acc1, env', op { oTy = ty { place = PConcrete pOut }, x = x', y = y' })
 
+  -- gradient of tanh: align y and gy just like ZipWith and inherit placement
+  op@(GradTanh ty y gy) ->
+    let py = lookupPlace env y
+        pg = lookupPlace env gy
+        want = lookupWant env v <|> lookupWant env y <|> lookupWant env gy
+        (acc1, y', gy', pOut) = align acc (y,py) (gy,pg) want
+        env' = setPlace env v pOut
+    in (acc1, env', op { oTy = ty { place = PConcrete pOut }, yOut = y', gUp = gy' })
+
   -- reductions: if reducing across mesh-split axis, insert allreduce and replicate
   op@(Reduce ty _ (Axis redAx) x) ->
     let px             = lookupPlace env x

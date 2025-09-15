@@ -40,6 +40,7 @@ module IR
   , pattern PMatMul
   , pattern PMatMulEpi
   , pattern PColl
+  , pattern PGradTanh
 
     -- * Helpers
   , tyOf
@@ -174,6 +175,9 @@ data Op
   -- Explicit collectives (inserted by planner)
   | Collective { oTy :: !Ty, coll :: !Collective, x :: V }
 
+  -- Minimal AD gradient node for tanh: given y=tanh(x) and upstream gy, produce gx
+  | GradTanh  { oTy :: !Ty, yOut :: V, gUp :: V }
+
   deriving (Eq, Ord, Show, Generic)
 
 --------------------------------------------------------------------------------
@@ -197,11 +201,14 @@ pattern PMatMulEpi t a b ta tb m e = MatMulEpilogue t a b ta tb m e
 pattern PColl :: Ty -> Collective -> V -> Op
 pattern PColl t k v          = Collective t k v
 
+pattern PGradTanh :: Ty -> V -> V -> Op
+pattern PGradTanh t y gy     = GradTanh t y gy
+
 {-# COMPLETE
     Const, Param, Copy, Reshape, Transpose
   , Map, ZipWith, Reduce
   , MatVec, MatMul, MatMulEpilogue
-  , Collective
+  , Collective, GradTanh
   #-}
 
 --------------------------------------------------------------------------------
@@ -250,6 +257,7 @@ renameVarInOp sub = go
     go (MatMulEpilogue t a b ta tb m me) = MatMulEpilogue t (r a) (r b) ta tb m
                                            (fmap (\(pw, mb)->(pw, fmap r mb)) me)
     go (Collective t k a)                = Collective t k (r a)
+    go (GradTanh t y gy)                 = GradTanh t (r y) (r gy)
     go op@Const{}                        = op
     go op@Param{}                        = op
 
@@ -279,3 +287,4 @@ ppStmt (Let v op) = show v <> " = " <> case op of
     "MatMulEpilogue " <> show a <> "·" <> show b <> " " <> show m
     <> " epi=" <> show e <> " :" <> ppTy t
   Collective t k a      -> "Collective " <> show k <> " " <> show a <> " :" <> ppTy t
+  GradTanh t y gy       -> "GradTanh y=" <> show y <> " gy=" <> show gy <> " :" <> ppTy t

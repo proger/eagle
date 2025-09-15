@@ -124,6 +124,9 @@ emitStmt _ (Let v op) =
               [ T.concat ["    ", vname v, " = _shard_take(", vname x, ", dim=", tshow ax, ")"] ]
             _ -> [ T.concat ["    ", vname v, " = ", vname x] ]
 
+    GradTanh _ y gy ->
+      [ T.concat ["    ", vname v, " = (", vname gy, ") * (torch.ones_like(", vname y, ") - (", vname y, " * ", vname y, "))"] ]
+
 -- --- helpers to peek shapes for Reshape “expand” heuristic
 
 placeShapeOf :: V -> Shape
