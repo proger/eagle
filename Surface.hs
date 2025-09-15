@@ -5,7 +5,7 @@ module Surface
   , Arr(..), param
   , addBatchView, dropBatchView
   , mapA, zipAdd, tanhA
-  , matmul, matvec     -- matvec is a SMART constructor (lifts to matmul)
+  , matmul, matvec
   ) where
 
 import           Control.Monad.State.Strict
@@ -106,7 +106,6 @@ matmul a b = do
       tOut   = Tensor dt [m,n] RowMajor (mergePlace plA plB)
   withBind (MatMul tOut (unA a) (unA b) False False MMA16x16x16)
 
--- SMART matvec: if RHS has batch, lift to matmul; else emit MatVec
 matvec :: Arr -> Arr -> Build Arr
 matvec a x = do
   ta <- arrTy a
