@@ -70,6 +70,22 @@ main = do
   printProg "=== Base ===" progAlg
   printProg "=== Replicated (before optimize) ===" progRep
   printProg "=== Replicated (after  optimize) ===" progRepOpt
+  printProg "=== Split-by-columns (before optimize) ===" progCol
+  printProg "=== Split-by-columns (after  optimize) ===" progColOpt
+
+  -- Emit PyTorch eager code using Backend.hs (before and after optimize)
+  putStrLn "\n=== PyTorch (Replicated, before optimize) ==="
+  TIO.putStrLn (emitTorch progRep)
+  emitTorchToFile "compiled_rnn_step.replicated.before.py" progRep
+
+  putStrLn "\n=== PyTorch (Split-by-columns, before optimize) ==="
+  TIO.putStrLn (emitTorch progCol)
+  emitTorchToFile "compiled_rnn_step.before.py" progCol
+
+  putStrLn "\n=== PyTorch (Split-by-columns, after optimize) ==="
+  TIO.putStrLn (emitTorch progColOpt)
+  emitTorchToFile "compiled_rnn_step.after.py" progColOpt
+  putStrLn "Wrote compiled_rnn_step.replicated.before.py, compiled_rnn_step.before.py and compiled_rnn_step.after.py"
 
 -- vmap specialized for rnnStep (5-arg step): adds batch on x, hprev, bias; leaves weights as-is
 -- rnnStep has type:

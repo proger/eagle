@@ -31,49 +31,7 @@ orderedParams ss =
 pyHeader :: T.Text
 pyHeader = T.unlines
   [ "import torch"
-  , "import torch.distributed as dist"
-  , ""
-  , "def _maybe_reshape_or_expand(x, target_rank, last_dim=None):"
-  , "    \"\"\""
-  , "    If target_rank == x.dim(): return x"
-  , "    If target_rank == x.dim()+1: unsqueeze(-1) and expand last_dim."
-  , "    Otherwise, fallback to view/reshape (may fail if sizes mismatch)."
-  , "    \"\"\""
-  , "    if target_rank == x.dim():"
-  , "        return x"
-  , "    if target_rank == x.dim() + 1:"
-  , "        x2 = x.unsqueeze(-1)"
-  , "        if last_dim is None:  # cannot infer; keep as unsqueezed singleton"
-  , "            return x2"
-  , "        shape = list(x2.shape); shape[-1] = last_dim"
-  , "        return x2.expand(*shape)"
-  , "    # Fallback: trust reshape with -1 placeholders"
-  , "    return x.reshape(*([-1] * target_rank))"
-  , ""
-  , "def _all_gather_cat(x, dim):"
-  , "    if not dist.is_available() or not dist.is_initialized():"
-  , "        return x"
-  , "    ws = dist.get_world_size()"
-  , "    tensors = [torch.empty_like(x) for _ in range(ws)]"
-  , "    dist.all_gather(tensors, x)"
-  , "    return torch.cat(tensors, dim=dim)"
-  , ""
-  , "def _all_reduce_sum(x):"
-  , "    if not dist.is_available() or not dist.is_initialized():"
-  , "        return x"
-  , "    dist.all_reduce(x, op=dist.ReduceOp.SUM)"
-  , "    return x"
-  , ""
-  , "def _reduce_scatter_sum_cat(x, dim):"
-  , "    if not dist.is_available() or not dist.is_initialized():"
-  , "        return x"
-  , "    # Split equally along dim and reduce_scatter. Requires equal chunks."
-  , "    ws = dist.get_world_size()"
-  , "    chunks = list(torch.chunk(x, ws, dim=dim))"
-  , "    out = torch.empty_like(chunks[0])"
-  , "    dist.reduce_scatter_tensor(out, torch.cat(chunks, dim=0), op=dist.ReduceOp.SUM)"
-  , "    return out"
-  , ""
+  , "from eagle.runtime import _maybe_reshape_or_expand, _all_gather_cat, _all_reduce_sum, _reduce_scatter_sum_cat, _shard_take"
   ]
 
 pySignature :: [T.Text] -> T.Text
@@ -88,8 +46,12 @@ pyReturn v = T.concat ["    return ", vname v]
 emitStmt :: V -> Stmt -> [T.Text]
 emitStmt _ (Let v op) =
   case op of
-    Param _ nm ->
-      [ T.concat ["    ", vname v, " = ", nm] ]
+    Param ty nm ->
+      let base = [ T.concat ["    ", vname v, " = ", nm] ]
+      in case place (oTy op) of
+           PConcrete [Split (Axis ax)] ->
+             base ++ [ T.concat ["    ", vname v, " = _shard_take(", vname v, ", dim=", tshow ax, ")"] ]
+           _ -> base
 
     Const _ _ ->
       [ T.concat ["    # ", vname v, " = Const  (initialize in Python if needed)"]
@@ -99,13 +61,19 @@ emitStmt _ (Let v op) =
       [ T.concat ["    ", vname v, " = ", vname x] ]
 
     Reshape ty x ->
-      let (rankSrc, rankDst, lastDim) = (Nothing, shapeRank (placeShapeOf x), lastSymLast ty)
-      in [ T.concat [ "    ", vname v, " = _maybe_reshape_or_expand("
-                    , vname x, ", ", tshowRank rankDst
-                    , case lastDim of
-                        Just s  -> T.concat [", last_dim=", s]
-                        Nothing -> ""
-                    , ")" ] ]
+      let rankDst = shapeRank (placeShapeOf x)
+          lastDim = lastSymLast ty
+          reshapeLn = T.concat [ "    ", vname v, " = _maybe_reshape_or_expand("
+                               , vname x, ", ", tshowRank rankDst
+                               , case lastDim of
+                                   Just s  -> T.concat [", last_dim=", s]
+                                   Nothing -> ""
+                               , ")" ]
+          shShard = case place ty of
+                      PConcrete [Split (Axis ax)] ->
+                        [ T.concat ["    ", vname v, " = _shard_take(", vname v, ", dim=", tshow ax, ")"] ]
+                      _ -> []
+      in reshapeLn : shShard
 
     Transpose _ perm x ->
       [ T.concat ["    ", vname v, " = ", vname x, ".permute(", ints perm, ")"] ]
@@ -142,7 +110,7 @@ emitStmt _ (Let v op) =
                 (Neg,  _)         -> T.concat ["(-", core, ")"]
       in [ T.concat ["    ", vname v, " = ", withEpi] ]
 
-    Collective _ coll x ->
+    Collective ty coll x ->
       case coll of
         AllReduceSum _ ->
           [ T.concat ["    ", vname v, " = _all_reduce_sum(", vname x, ")"] ]
@@ -150,9 +118,11 @@ emitStmt _ (Let v op) =
           [ T.concat ["    ", vname v, " = _all_gather_cat(", vname x, ", dim=", tshow ax, ")"] ]
         ReduceScatter (Axis ax) ->
           [ T.concat ["    ", vname v, " = _reduce_scatter_sum_cat(", vname x, ", dim=", tshow ax, ")"] ]
-        BroadcastTo _ ->
-          -- Placement cast is a no-op in eager: treat as identity
-          [ T.concat ["    ", vname v, " = ", vname x] ]
+        BroadcastTo p ->
+          case p of
+            [Split (Axis ax)] ->
+              [ T.concat ["    ", vname v, " = _shard_take(", vname x, ", dim=", tshow ax, ")"] ]
+            _ -> [ T.concat ["    ", vname v, " = ", vname x] ]
 
 -- --- helpers to peek shapes for Reshape “expand” heuristic
 

@@ -98,8 +98,10 @@ specializePlacement :: Target -> [SchedCmd] -> Prog -> Prog
 specializePlacement tgt cmds (Prog defs ret) =
   let env0            = applySched cmds (emptyEnv tgt defs)
       (defs', env1)   = planBlock env0 [] defs
-      defsFinal       = finalizeTypes env1 defs'
-  in Prog defsFinal ret
+      defsTyped       = finalizeTypes env1 defs'
+      (defsFinal, ret') = finalizeReturn env1 defsTyped ret
+      (defsRenamed, ret'') = renumber defsFinal ret'
+  in Prog defsRenamed ret''
 
 --------------------------------------------------------------------------------
 -- block traversal
@@ -113,6 +115,26 @@ planBlock env acc (Let v op:xs)  =
 -- set the final PConcrete placement on every op's type
 finalizeTypes :: PlanEnv -> [Stmt] -> [Stmt]
 finalizeTypes env = map (\(Let v op) -> Let v (op { oTy = (oTy op){ place = PConcrete (lookupPlace env v) } }))
+
+-- Ensure the program return is replicated for a clean user-facing result.
+-- If the planned placement is split, insert an AllGather; if it's PartialSum,
+-- insert an AllReduce on a best-effort axis guess.
+finalizeReturn :: PlanEnv -> [Stmt] -> V -> ([Stmt], V)
+finalizeReturn env defs retV =
+  case lookupPlace env retV of
+    [] -> (defs, retV)
+    [Split ax] ->
+      let ty  = tyOfVar defs retV
+          ty' = ty { place = PConcrete [] }
+          (v', defs1) = bind (Collective ty' (AllGather ax) retV) defs
+      in (defs1, v')
+    [PartialSum] ->
+      let ax  = Axis 0  -- best-effort when axis not tracked explicitly
+          ty  = tyOfVar defs retV
+          ty' = ty { place = PConcrete [] }
+          (v', defs1) = bind (Collective ty' (AllReduceSum ax) retV) defs
+      in (defs1, v')
+    _ -> (defs, retV)
 
 --------------------------------------------------------------------------------
 -- op-by-op planning & communication insertion
@@ -205,6 +227,16 @@ align :: [Stmt]
       -> Maybe Placement
       -> ([Stmt], V, V, Placement)
 align acc (vx,px) (vy,py) wantOut
+  -- If either side is a PartialSum, first all-reduce it to replicated,
+  -- choosing the mesh axis based on the other side's placement.
+  | px == [PartialSum] =
+      let ax   = guessAxis py
+          (vx', acc1) = insertAllReduce acc vx ax
+      in align acc1 (vx', []) (vy, py) wantOut
+  | py == [PartialSum] =
+      let ax   = guessAxis px
+          (vy', acc1) = insertAllReduce acc vy ax
+      in align acc1 (vx, px) (vy', []) wantOut
   | px == py =
       let pout = fromMaybe px wantOut
       in (acc, vx, vy, pout)
@@ -275,7 +307,7 @@ matmulRule acc wantOut (va,pa) (vb,pb) =
       in (acc, va, vb, pout)
 
     ([Split _axK], []) ->
-      -- split-K partials: mark partial; consumer resolves to allreduce or reduce-scatter
+      -- split-K partials: mark partial; consumer or align will resolve via all-reduce
       let pout = chooseOut wantOut partial
       in (acc, va, vb, pout)
 
@@ -349,3 +381,18 @@ tyOfVar defs v =
   case lookupLet v defs of
     Just (Let _ op) -> oTy op
     Nothing         -> error ("Planner: unknown var " <> show v)
+
+--------------------------------------------------------------------------------
+-- Renumbering to ensure unique, linear var IDs after planner insertions
+
+renumber :: [Stmt] -> V -> ([Stmt], V)
+renumber defs retV =
+  let (defs', sub, next) = foldl step ([], M.empty, 0) defs
+      retV' = M.findWithDefault retV retV sub
+  in (reverse defs', retV')
+  where
+    step (acc, sub, n) (Let v op0) =
+      let op1 = renameVarInOp sub op0
+          v'  = V n
+          sub' = M.insert v v' sub
+      in (Let v' op1 : acc, sub', n+1)
